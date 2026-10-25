@@ -114,6 +114,7 @@ void WifiBoard::OnNetworkEvent(NetworkEvent event, const std::string& data) {
             Blufi::GetInstance().deinit();
 #endif
             in_config_mode_ = false;
+            if (auto display = GetDisplay()) display->SetWifiConfigInfo("", "");   // 撤掉配网信息页
             ESP_LOGI(TAG, "Connected to WiFi: %s", data.c_str());
             break;
         case NetworkEvent::Scanning:
@@ -132,6 +133,7 @@ void WifiBoard::OnNetworkEvent(NetworkEvent event, const std::string& data) {
         case NetworkEvent::WifiConfigModeExit:
             ESP_LOGI(TAG, "WiFi config mode exited");
             in_config_mode_ = false;
+            if (auto display = GetDisplay()) display->SetWifiConfigInfo("", "");   // 撤掉配网信息页
             // Try to connect with the new credentials
             TryWifiConnect();
             break;
@@ -165,6 +167,18 @@ void WifiBoard::StartWifiConfigMode() {
     auto& wifi_manager = WifiManager::GetInstance();
 
     wifi_manager.StartConfigAp();
+
+    // 小屏整屏显示"连哪个热点 / 打开哪个地址"（参照 C3 小车那版）
+    //   ⚠️ 原来这里只有一句 ShowNotification("正在进入配网模式")，用户知道在配网，
+    //      却不知道下一步该连哪个热点、开哪个网页 —— 小屏设备必须把信息画出来。
+    //   ⚠️ 6x8 字库里没有 '/'（会画成空格），所以把 "http://" 前缀去掉只留 IP
+    if (auto display = GetDisplay()) {
+        auto ap_ssid = wifi_manager.GetApSsid();
+        auto ap_url  = wifi_manager.GetApWebUrl();
+        const char* url = ap_url.c_str();
+        if (strncmp(url, "http://", 7) == 0) url += 7;
+        display->SetWifiConfigInfo(ap_ssid.c_str(), url);
+    }
 
     // Show config prompt after a short delay
     Application::GetInstance().Schedule([&wifi_manager]() {

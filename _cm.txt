@@ -1,0 +1,21 @@
+feat: 开机配网信息与激活验证码上屏（参照 C3 小车移植）
+
+问题：成品板进入配网只弹一句提示，激活时也只在串口打验证码，屏幕上什么都没有。
+根因：Alert / ShowNotification 写的是 status_text_，而 OledDisplay 在表情/壁纸
+模式下根本不渲染 status_text_，所以用户只能翻串口日志才能拿到验证码。
+
+改动：
+1. display.h：新增虚接口 SetWifiConfigInfo / SetActivationCode（默认空实现，
+   不影响 LCD 与无屏板）
+2. oled_display：新增两个整屏信息页
+   - 配网信息：请连接热点 / 热点名 / 打开浏览器访问 / 配网地址
+   - 激活验证码：标题 + 大号数字（用户照着输入到 APP 或控制台）
+   两者优先级高于音乐/壁纸/表情；退出时强制全屏重画，避免残留文字叠在壁纸上
+3. oled_display：新增 MeasureUtf8String（累加 14px 普惠字体 adv_w）用于中文居中
+4. application：ShowActivationCode 调用 SetActivationCode(code)；激活完成传空串撤掉
+5. wifi_board：StartWifiConfigMode 时把 AP 名与配网地址上屏；
+   连上网 / 退出配网时清空该页
+
+坑：6x8 小字库不含 '/' 字符（会画成空格），所以配网地址必须剥掉 http:// 前缀。
+
+同时重新打包完整固件 fixed-WHA103-20261025-full.bin（8786984 字节，烧录 0x0）。

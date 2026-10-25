@@ -66,6 +66,18 @@ public:
     virtual void SetMusicMode(bool on) { (void)on; }
     // 歌名：play_music 标记之后的第一条 sentence_start 就是歌名（默认忽略）。
     virtual void SetSongName(const char* name) { (void)name; }
+
+    // ── 整屏"配网信息"页 ──
+    //   小屏设备（C3 成品板）必须把"连哪个热点 / 打开哪个地址"画到屏幕上：
+    //   只弹一句"正在进入配网模式"的话，用户知道在配网，却不知道下一步做什么。
+    //   传空串 = 关闭该页、恢复正常界面。默认忽略（LCD/无屏板不受影响）。
+    virtual void SetWifiConfigInfo(const char* ssid, const char* url) { (void)ssid; (void)url; }
+
+    // ── 整屏"激活验证码"页 ──
+    //   用户要照着这串数字到 APP / 控制台输入。默认忽略。
+    //   ⚠️ 原来成品板只有 Alert() 写 status_text_，而 OledDisplay 在表情/壁纸
+    //      模式下根本不渲染 status_text_ → 屏幕上什么都没有，只在串口打日志。
+    virtual void SetActivationCode(const char* code) { (void)code; }
     // TTS 正在说话：进入/退出播报时通知，用来让嘴跟着动（默认忽略）。
     virtual void SetSpeaking(bool on) { (void)on; }
 

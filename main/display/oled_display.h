@@ -94,6 +94,22 @@ private:
     char song_name_[32] = {0};                // 歌名（音乐界面顶部显示）
     int  song_w_ = 0;                         // 歌名绘制宽度（SetSongName 时算好）
 
+    // ── 整屏信息页（配网信息 / 激活验证码）──
+    //   ⚠️ 这两个页面必须**抢占**壁纸、表情、音乐：
+    //     配网和激活都是"设备卡住等你操作"的状态，此时还在放壁纸/眨眼睛，
+    //     用户会以为机器坏了。visible 为真时 RenderTick 直接只画这一页。
+    //   ⚠️ special_drawn_ 记录"上一帧画的是信息页"，用于退出信息页时
+    //     强制全屏重画 —— 否则残留的文字会叠在壁纸上，变得一团糟。
+    std::atomic<bool> cfg_info_visible_{false};   // 配网信息页
+    std::atomic<bool> act_code_visible_{false};   // 激活验证码页（优先级更高）
+    std::atomic<bool> special_drawn_{false};      // 上一帧是否为信息页
+    char cfg_ssid_[40] = {0};                     // AP 名称（如 "Xiaozhi-XXXX"）
+    char cfg_url_[40]  = {0};                     // 配网地址（已去掉 http:// 前缀）
+    char act_code_[16] = {0};                     // 激活验证码（6 位数字）
+    void RenderWifiConfigInfo();                  // 整屏配网信息
+    void RenderActivationCode();                  // 整屏验证码（大号）
+    int  MeasureUtf8String(const char* s);        // 中文/ASCII 混合字符串宽度（用于居中）
+
     // ── RoboEyes：直接复用 yyxc 那套 FluxGarage RoboEyes ──
     //   眼睛的大小/形状/情绪/动画 100% 照搬，本项目只补一个极简的图形后端。
     //   RoboEyes 全程只用到 4 个方法：clearDisplay / display / fillRoundRect / fillTriangle
@@ -215,6 +231,12 @@ public:
     virtual void SetSpeaking(bool on) override;           // 说话中 → 嘴跟着动
     void RenderMusic();                             // 整屏 ♫，替代表情/时钟
     void RenderTick();                              // 统一渲染入口（timer + 主循环）
+
+    // ── 两个"整屏信息页"（优先级高于壁纸/表情/音乐）──
+    //   配网信息：连哪个热点 + 打开哪个地址（参照 C3 小车那版移植过来）
+    virtual void SetWifiConfigInfo(const char* ssid, const char* url) override;
+    //   激活验证码：大号显示，用户照着输入到 APP / 控制台
+    virtual void SetActivationCode(const char* code) override;
 };
 
 #endif // OLED_DISPLAY_H

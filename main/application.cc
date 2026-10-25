@@ -486,6 +486,7 @@ void Application::HandleActivationDoneEvent() {
     std::string message = std::string(Lang::Strings::VERSION) + ota_->GetCurrentVersion();
     display->ShowNotification(message.c_str());
     display->SetChatMessage("system", "");
+    display->SetActivationCode("");   // 激活完成 → 撤掉验证码页，恢复壁纸/表情
 
     // Play the success sound to indicate the device is ready
     audio_service_.PlaySound(Lang::Sounds::OGG_SUCCESS);
@@ -1048,6 +1049,11 @@ void Application::ShowActivationCode(const std::string& code, const std::string&
 
     // 无屏/无喇叭板子：验证码打到串口，方便从日志获取
     ESP_LOGW(TAG, "==== 激活验证码: %s (%s) ====", code.c_str(), message.c_str());
+
+    // 有屏的板子（C3 成品板）：整屏大号显示验证码 —— 用户要照着它到 APP/控制台输入。
+    //   ⚠️ 原来只有上面那句 Alert()，它写的是 status_text_，而 OledDisplay 在
+    //      表情/壁纸模式下根本不渲染 status_text_ → 屏幕上啥也没有，只能翻串口日志。
+    Board::GetInstance().GetDisplay()->SetActivationCode(code.c_str());
 
     for (const auto& digit : code) {
         auto it = std::find_if(digit_sounds.begin(), digit_sounds.end(),

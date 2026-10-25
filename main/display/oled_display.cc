@@ -364,6 +364,23 @@ void OledDisplay::Unlock() {
 //    直接用 animated_mode_ 判断 → 放音乐时主循环每 tick 把表情画回去，
 //    和 timer 画的音符交替出现，看起来就是"隐约能看到表情"。
 void OledDisplay::RenderTick() {
+    // ── 整屏信息页：优先级高于一切（音乐 / 壁纸 / 表情）──
+    //   "配网中"和"待激活"都是**设备停下来等你操作**的状态。这时候还在放星球、
+    //   眨眼睛，用户会以为机器坏了，或者根本不知道该看哪里。
+    //   ⚠️ 验证码优先于配网信息：已经连上网但还没激活时，用户要的是那串数字。
+    if (act_code_visible_.load() || cfg_info_visible_.load()) {
+        if (dirty_) {
+            Clear();                    // 整屏重画：清掉壁纸/眼睛的残留像素
+            if (act_code_visible_.load()) RenderActivationCode();
+            else                          RenderWifiConfigInfo();
+            PushFrame();                // 内部会把 dirty_ 清掉
+        }
+        special_drawn_ = true;          // 记住这一帧画的是信息页
+        return;                         // 不画状态栏：整屏都是这一页
+    }
+    // 刚从信息页退出来 → 强制全屏重画一次，否则残留文字会叠在壁纸上
+    if (special_drawn_.exchange(false)) dirty_ = true;
+
     if (music_mode_) {
         // 🎵 音乐：整屏大音符，替代表情/时钟（音乐结束自动恢复）
         RenderMusic();
@@ -1642,6 +1659,107 @@ void OledDisplay::SetMusicMode(bool on) {
 }
 
 // 🎵 音乐界面：整屏居中 2 个 32x32 大音符，替代表情/时钟显示
+// ------------------ 整屏信息页：配网信息 / 激活验证码 ------------------
+// 从 C3 小车那版移植过来（xiaozhi-car/main/display/oled_display.cc）。
+// 目的：这台成品板的 AP 是开放网络，用户必须知道"连哪个热点 / 打开哪个地址"；
+//   激活时必须看到那串数字才能去 APP 里输入。原来这两件事只在串口日志里打，
+//   屏幕上什么都没有（Alert 写的 status_text_ 在表情/壁纸模式下不渲染）。
+
+// 中文/ASCII 混合字符串的像素宽度（累加 14px 普惠字体的 adv_w）
+//   只用于算居中位置。缺字按半角 7px 估，别把整行挤歪。
+int OledDisplay::MeasureUtf8String(const char* s) {
+    if (!s) return 0;
+    const lv_font_t* f = &font_puhui_14_1;
+    const lv_font_fmt_txt_dsc_t* fd = (const lv_font_fmt_txt_dsc_t*)f->dsc;
+    if (fd->bpp != 1) return (int)strlen(s) * 7;
+
+    int w = 0;
+    const uint8_t* p = (const uint8_t*)s;
+    while (*p) {
+        uint32_t uni = 0;
+        int len = 1;
+        if      ((*p & 0x80) == 0)    { uni = *p; len = 1; }
+        else if ((*p & 0xE0) == 0xC0) { uni = ((uint32_t)(p[0] & 0x1F) <<  6) | (p[1] & 0x3F); len = 2; }
+        else if ((*p & 0xF0) == 0xE0) { uni = ((uint32_t)(p[0] & 0x0F) << 12) | ((uint32_t)(p[1] & 0x3F) << 6) | (p[2] & 0x3F); len = 3; }
+        else if ((*p & 0xF8) == 0xF0) { uni = ((uint32_t)(p[0] & 0x07) << 18) | ((uint32_t)(p[1] & 0x3F) << 12) | ((uint32_t)(p[2] & 0x3F) << 6) | (p[3] & 0x3F); len = 4; }
+        else { p++; continue; }                     // 非法字节，跳过
+
+        uint32_t gid = LookupGlyphId(fd, uni);
+        if (gid) {
+            const lv_font_fmt_txt_glyph_dsc_t* gd = &fd->glyph_dsc[gid];
+            w += gd->adv_w >> 4;                    // adv_w 是 28.4 定点
+        } else {
+            w += 7;                                 // 缺字
+        }
+        p += len;
+    }
+    return w;
+}
+
+// 整屏配网信息（128x64 布局）：
+//   y=2   请连接热点      （14px 中文，居中）
+//   y=20  热点名          （6x8 ASCII，居中）
+//   y=38  打开浏览器访问  （14px 中文，居中）
+//   y=50  配网地址        （6x8 ASCII，居中）
+void OledDisplay::RenderWifiConfigInfo() {
+    const char* t1 = "请连接热点";
+    int x = (kWidth - MeasureUtf8String(t1)) / 2;
+    DrawUtf8String(x < 0 ? 0 : x, 2, t1);
+
+    // ⚠️ 6x8 小字库里没有 '/'（会画成空格），所以调用方已经把 "http://" 前缀去掉了
+    int w = (int)strlen(cfg_ssid_) * 6;
+    x = (kWidth - w) / 2;
+    DrawString6x8(x < 0 ? 0 : x, 20, cfg_ssid_);
+
+    const char* t2 = "打开浏览器访问";
+    x = (kWidth - MeasureUtf8String(t2)) / 2;
+    DrawUtf8String(x < 0 ? 0 : x, 38, t2);
+
+    w = (int)strlen(cfg_url_) * 6;
+    x = (kWidth - w) / 2;
+    DrawString6x8(x < 0 ? 0 : x, 50, cfg_url_);
+}
+
+// 整屏激活验证码：标题 + 大号数字（用户照着输入到 APP / 控制台）
+void OledDisplay::RenderActivationCode() {
+    const char* t = "激活验证码";
+    int x = (kWidth - MeasureUtf8String(t)) / 2;
+    DrawUtf8String(x < 0 ? 0 : x, 4, t);
+
+    // scale=2 → 每字符占位 12px（5px 字放大 2 倍 + 间距），整体居中
+    int total = (int)strlen(act_code_) * 12 - 2;   // 最后一个字符不算尾部间距
+    x = (kWidth - total) / 2;
+    DrawStringScaled(x < 0 ? 0 : x, 26, act_code_, 2);
+}
+
+void OledDisplay::SetWifiConfigInfo(const char* ssid, const char* url) {
+    Lock(100);
+    if (ssid && ssid[0]) {
+        strncpy(cfg_ssid_, ssid, sizeof(cfg_ssid_) - 1);
+        cfg_ssid_[sizeof(cfg_ssid_) - 1] = 0;
+        strncpy(cfg_url_, url ? url : "", sizeof(cfg_url_) - 1);
+        cfg_url_[sizeof(cfg_url_) - 1] = 0;
+        cfg_info_visible_ = true;
+    } else {
+        cfg_info_visible_ = false;      // 传空串 = 关掉这一页
+    }
+    dirty_ = true;
+    Unlock();
+}
+
+void OledDisplay::SetActivationCode(const char* code) {
+    Lock(100);
+    if (code && code[0]) {
+        strncpy(act_code_, code, sizeof(act_code_) - 1);
+        act_code_[sizeof(act_code_) - 1] = 0;
+        act_code_visible_ = true;
+    } else {
+        act_code_visible_ = false;      // 传空串 = 关掉这一页（激活完成）
+    }
+    dirty_ = true;
+    Unlock();
+}
+
 void OledDisplay::RenderMusic() {
     Clear();
 
