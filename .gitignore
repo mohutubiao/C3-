@@ -38,3 +38,8 @@ mmap_generate_*.h
 
 # 本地固件备份（硬件回退用，不入库）
 backup/
+
+# 临时/调试产物：抓串口日志、提交信息草稿
+_cm.txt
+_cap*.py
+cap*.log
