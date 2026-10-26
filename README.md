@@ -8,8 +8,6 @@
 #### 二群：34974022
 #### 一群(已满)：183253687
 
-![图片](https://ossbigdata.yunjiutoutiao.com/PicGo/qebabe-xiaoche1.jpg)
-
 **具体玩法：详细功能分析**
 
 ## 2. 组装连线

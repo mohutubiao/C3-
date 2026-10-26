@@ -403,36 +403,6 @@ elseif(CONFIG_BOARD_TYPE_MOVECALL_MOJI_ESP32S3)
     set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
     set(BUILTIN_ICON_FONT font_awesome_20_4)
     set(DEFAULT_EMOJI_COLLECTION twemoji_64)
-elseif(CONFIG_BOARD_TYPE_QEBABE_XIAOCHE)
-    set(BOARD_TYPE "qebabe-xiaoche")
-    set(BUILTIN_TEXT_FONT font_puhui_basic_14_1)
-    set(BUILTIN_ICON_FONT font_awesome_14_1)
-elseif(CONFIG_BOARD_TYPE_QEBABE_XIAOCHE_TFT)
-    set(BOARD_TYPE "qebabe-xiaoche-tft")
-    set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)
-    set(BUILTIN_ICON_FONT font_awesome_20_4)
-    set(DEFAULT_EMOJI_COLLECTION twemoji_64)
-elseif(CONFIG_BOARD_TYPE_QEBABE_XIAOCHE_C3)
-    set(BOARD_TYPE "qebabe-xiaoche-c3")
-    set(BUILTIN_TEXT_FONT font_puhui_basic_14_1)
-    set(BUILTIN_ICON_FONT font_awesome_14_1)
-    # C3 板子不画大表情，emoji 资源完全不需要
-    set(DEFAULT_EMOJI_COLLECTION "")
-    # 彻底关 EMOTE：assets 不打包 emote 资源
-    set(EMOTE_RESOLUTION "")
-    # C3 板子只用中文，强制 LANG_DIR 走 zh-CN，绕开 en-US 兜底逻辑
-    set(LANG_DIR "zh-CN")
-    # 删 37 个无关语言 + 6 个不用的 codec（保留 audio_debugger.cc 因为 audio_service.h 强依赖）
-    list(REMOVE_ITEM SOURCES
-        "audio/codecs/box_audio_codec.cc"
-        "audio/codecs/es8311_audio_codec.cc"
-        "audio/codecs/es8374_audio_codec.cc"
-        "audio/codecs/es8388_audio_codec.cc"
-        "audio/codecs/es8389_audio_codec.cc"
-        "audio/codecs/dummy_audio_codec.cc"
-        "led/single_led.cc"
-        "led/gpio_led.cc"
-    )
 elseif(CONFIG_BOARD_TYPE_MOVECALL_MOJI2_ESP32C5)
     set(BOARD_TYPE "movecall-moji2-esp32c5")
     set(BUILTIN_TEXT_FONT font_puhui_basic_20_4)

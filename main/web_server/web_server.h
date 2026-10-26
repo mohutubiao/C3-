@@ -140,8 +140,6 @@ private:
     // 获取HTML页面内容
     // 新控制页（这台设备没有电机）：状态 + 屏幕显示模式 + 设备信息
     static const char* get_control_html_page();
-    // ⚠️ 旧的小车遥控页，已不再使用（由 get_control_html_page 取代）
-    static const char* get_html_page();
 
     // 解析控制命令
     //   注：原 parse_json_control_command() 无任何调用点（表单走 parse_config_form_data、

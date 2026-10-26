@@ -347,15 +347,6 @@ choice BOARD_TYPE
     config BOARD_TYPE_MOVECALL_MOJI_ESP32S3
         bool "Movecall Moji 小智AI衍生版"
         depends on IDF_TARGET_ESP32S3
-    config BOARD_TYPE_QEBABE_XIAOCHE
-        bool "Qebabe Xiaoche"
-        depends on IDF_TARGET_ESP32S3
-    config BOARD_TYPE_QEBABE_XIAOCHE_TFT
-        bool "Qebabe Xiaoche (ST7789 240x240 TFT)"
-        depends on IDF_TARGET_ESP32S3
-    config BOARD_TYPE_QEBABE_XIAOCHE_C3
-        bool "Qebabe Xiaoche C3 (12 IO 精简版: SSD1306 + I2S Simplex + 4 电机)"
-        depends on IDF_TARGET_ESP32C3
     config BOARD_TYPE_MOVECALL_MOJI2_ESP32C5
         bool "Movecall Moji2.0 小智AI衍生版"
         depends on IDF_TARGET_ESP32C5
@@ -506,7 +497,7 @@ choice ESP_S3_LCD_EV_Board_Version_TYPE
 endchoice
 
 choice DISPLAY_OLED_TYPE
-    depends on BOARD_TYPE_BREAD_COMPACT_WIFI || BOARD_TYPE_BREAD_COMPACT_ML307 || BOARD_TYPE_BREAD_COMPACT_ESP32 || BOARD_TYPE_HU_087 || BOARD_TYPE_QEBABE_XIAOCHE
+    depends on BOARD_TYPE_BREAD_COMPACT_WIFI || BOARD_TYPE_BREAD_COMPACT_ML307 || BOARD_TYPE_BREAD_COMPACT_ESP32 || BOARD_TYPE_HU_087
     prompt "OLED Type"
     default OLED_SSD1306_128X32
     help

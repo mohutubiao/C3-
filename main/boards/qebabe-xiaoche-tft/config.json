@@ -1,9 +1,0 @@
-{
-    "target": "esp32s3",
-    "builds": [
-        {
-            "name": "qebabe-xiaoche-tft",
-            "sdkconfig_append": []
-        }
-    ]
-}
