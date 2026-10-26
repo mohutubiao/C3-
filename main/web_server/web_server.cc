@@ -24,9 +24,14 @@ extern "C" int  GetGlobalMaxSpeedPct();
 //   沿用上面的弱符号风格：板子没接屏幕时这两个接口直接返回 501。
 extern "C" void SetChatDisplayMode(bool text_mode) __attribute__((weak));
 extern "C" bool IsChatTextMode() __attribute__((weak));
-// 待机壁纸（0=静态时钟 1=动态星球 2=星空），同样是板级弱符号
+// 待机壁纸，同样是板级弱符号。
+//   ⚠️ 总数 / 名称也从板级取：以前 web_server 里硬编码 `v <= 2` 和 6 个名字，
+//      结果固件里明明有 6 种壁纸，网页只能切前 3 种（后 3 个按钮点了没反应）。
+//      现在一律问板子要，新增效果不用改这里。
 extern "C" void SetWallpaper(int wp) __attribute__((weak));
 extern "C" int  GetWallpaper() __attribute__((weak));
+extern "C" int  GetWallpaperCount() __attribute__((weak));
+extern "C" const char* GetWallpaperName(int wp) __attribute__((weak));
 
 // ──────────────────────────────────────────────────────────────────────
 //  /api/display_mode —— 屏幕「文字 / 表情」切换
@@ -76,11 +81,12 @@ esp_err_t WebServer::api_info_handler(httpd_req_t *req) {
     if (esp_netif_get_ip_info(esp_netif_get_handle_from_ifkey("WIFI_STA_DEF"), &info) == ESP_OK) {
         snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
     }
-    char buf[160];
-    snprintf(buf, sizeof(buf), "{\"ip\":\"%s\",\"text\":%s,\"wallpaper\":%d}",
+    char buf[192];
+    snprintf(buf, sizeof(buf), "{\"ip\":\"%s\",\"text\":%s,\"wallpaper\":%d,\"count\":%d}",
              ip,
              (IsChatTextMode && IsChatTextMode()) ? "true" : "false",
-             (GetWallpaper ? GetWallpaper() : 0));
+             (GetWallpaper ? GetWallpaper() : 0),
+             (GetWallpaperCount ? GetWallpaperCount() : 6));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
@@ -109,22 +115,30 @@ esp_err_t WebServer::api_theme_handler(httpd_req_t *req) {
             if (p) {
                 const char* q = strchr(p, ':');
                 if (q) {
-                    while (*q && (*q < '0' || *q > '9')) q++;
+                    // ⚠️ 必须认负号：原来遇到 "-1" 会把 '-' 当分隔符跳过，
+                    //   读到 1 → 负数请求反而切到了 1 号壁纸。
+                    bool neg = false;
+                    while (*q && (*q < '0' || *q > '9')) {
+                        if (*q == '-') neg = true;
+                        q++;
+                    }
                     if (*q) {
-                        int v = atoi(q);
-                        if (v >= 0 && v <= 2) wp = v;
+                        int v = neg ? -atoi(q) : atoi(q);
+                        // 上限问板子要（弱符号没了才退回 6），别再硬编码
+                        const int n = GetWallpaperCount ? GetWallpaperCount() : 6;
+                        if (v >= 0 && v < (n > 0 ? n : 6)) wp = v;
                     }
                 }
             }
         }
         SetWallpaper(wp);
-        // ⚠️ 同样要列满 6 个，理由见 xmini_c3_board.cc 的注释（越界会崩）
-        static const char* kName[] = {"时钟", "星球", "星空", "星际穿越", "指针时钟", "数字雨"};
-        ESP_LOGI("WebServer", "待机壁纸 → %s", kName[wp]);
+        ESP_LOGI("WebServer", "待机壁纸 → %s",
+                 (GetWallpaperName ? GetWallpaperName(wp) : "?"));
     }
 
-    char buf[48];
-    snprintf(buf, sizeof(buf), "{\"wallpaper\":%d}", wp);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "{\"wallpaper\":%d,\"count\":%d}", wp,
+             GetWallpaperCount ? GetWallpaperCount() : 6);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
     return ESP_OK;
@@ -809,6 +823,15 @@ const char* WebServer::get_control_html_page() {
   }
   .seg button.active{background:var(--acc);color:#fff;border-color:var(--acc)}
   .seg button:active{transform:scale(.98)}
+  /* 壁纸选择网格：壁纸数量多于 6 个，用 3 列网格比一排按钮更好按 */
+  .wpgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:2px}
+  .wpgrid button{
+    padding:11px 0;font-size:14px;font-weight:500;cursor:pointer;
+    background:#20242d;color:var(--dim);border:1px solid var(--line);
+    border-radius:10px;transition:.15s;
+  }
+  .wpgrid button.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+  .wpgrid button:active{transform:scale(.98)}
   .hint{color:var(--dim);font-size:12px;margin-top:11px}
 </style>
 </head>
@@ -838,26 +861,8 @@ const char* WebServer::get_control_html_page() {
 
 <div class="card">
   <h2>待机壁纸</h2>
-  <div class="seg">
-    <button id="btn-wp0" onclick="setWallpaper(0)">时钟</button>
-    <button id="btn-wp1" onclick="setWallpaper(1)">星球</button>
-    <button id="btn-wp2" onclick="setWallpaper(2)">星空</button>
-  </div>
-  <div class="seg">
-    <button id="btn-wp3" onclick="setWallpaper(3)">星际穿越</button>
-    <button id="btn-wp4" onclick="setWallpaper(4)">指针时钟</button>
-    <button id="btn-wp5" onclick="setWallpaper(5)">数字雨</button>
-  </div>
-  <div class="hint">
-    <b>时钟</b>：大号数字时间 + IP，每秒刷新，最省电。<br>
-    <b>星球</b>：光照球体 + 土星环 + 卫星 + 流星（12fps）。<br>
-    <b>星空</b>：闪烁星点 + 偶尔流星，最安静（12fps）。<br>
-    <b>星际穿越</b>：星点从中心辐射飞出，纵深感最强（12fps）。<br>
-    <b>指针时钟</b>：模拟表盘 + 时分秒针，每秒跳一格。<br>
-    <b>数字雨</b>：黑客帝国字符流（10fps）。<br>
-    <br>
-    也可以直接 <b>三击 BOOT 键</b> 循环切换。
-  </div>
+  <div class="wpgrid" id="wpgrid"></div>
+  <div class="hint" id="wphint">读取中…</div>
 </div>
 
 <div class="card">
@@ -903,12 +908,44 @@ function setWallpaper(v){
     .catch(function(e){ console.log(e); });
 }
 
-function paintWallpaper(v){
-  // ⚠️ 上限必须是 6（壁纸总数）。之前写成 3，结果后 3 个按钮的 active
-  //   永远不会被更新 —— 切到星际穿越/指针时钟/数字雨时按钮不亮，像"没反应"。
-  for (var i = 0; i < 6; i++) {
-    document.getElementById('btn-wp' + i).classList.toggle('active', i === v);
+// 壁纸清单：索引必须和固件里的 kWallpaperNames 一一对应。
+//   ⚠️ 历史上这里只写了 3 个、且服务端把范围卡死在 0..2，导致后几种
+//   壁纸在网页上点了完全没反应。现在按钮由这份清单动态生成，
+//   数量再由服务端返回的 count 兜底，固件加效果时只要同步这张表。
+var WP = [
+  ['时钟',     '大号数字时间 + IP，每秒刷新，最省电'],
+  ['星球',     '光照球体 + 土星环 + 卫星 + 流星'],
+  ['星空',     '闪烁星点 + 偶尔流星，最安静'],
+  ['星际穿越', '星点从中心辐射飞出，纵深感最强'],
+  ['指针时钟', '模拟表盘 + 时分秒针，每秒跳一格'],
+  ['数字雨',   '黑客帝国字符流'],
+  ['等离子',   '四层正弦干涉 + 有序抖动出的流动云雾'],
+  ['隧道',     '旋转方框由远及近飞出，螺旋隧道'],
+  ['波浪',     '三条异频正弦干涉出的水面波纹'],
+  ['弹球',     '物理反弹 + 流星拖尾'],
+  ['生命游戏', '康威细胞自动机，2×2 像素一个细胞'],
+  ['立方体',   '3D 线框立方体双轴旋转']
+];
+
+function buildWallpaper(count){
+  var n = Math.min((count || WP.length), WP.length);
+  var html = '';
+  for (var i = 0; i < n; i++) {
+    html += '<button id="btn-wp' + i + '" onclick="setWallpaper(' + i + ')">'
+          + WP[i][0] + '</button>';
   }
+  document.getElementById('wpgrid').innerHTML = html;
+}
+
+function paintWallpaper(v){
+  for (var i = 0; i < WP.length; i++) {
+    var b = document.getElementById('btn-wp' + i);
+    if (b) b.classList.toggle('active', i === v);
+  }
+  document.getElementById('wphint').innerHTML = (v >= 0 && v < WP.length)
+    ? '<b>' + WP[v][0] + '</b>：' + WP[v][1]
+      + '<br><br>也可以直接 <b>长按 BOOT 键</b> 循环切换（选择会断电保存）。'
+    : '';
 }
 
 function paintState(s, ses, now, end){
@@ -928,6 +965,7 @@ function paintState(s, ses, now, end){
 fetch('/api/info').then(function(r){ return r.json(); }).then(function(d){
   document.getElementById('ip').textContent = d.ip || '—';
   paintMode(!!d.text);
+  buildWallpaper(d.count);          // 按钮数量以固件实际支持的为准
   paintWallpaper(d.wallpaper | 0);
 }).catch(function(){});
 

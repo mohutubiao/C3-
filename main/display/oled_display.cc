@@ -189,6 +189,35 @@ int FontIdxForChar(char c) {
 
 } // namespace
 
+// ── 新增壁纸用的两张小表 ──────────────────────────────────────────────
+//  ⚠️ 单独开一个匿名 namespace：它们是"工具常量"，放在基础画图之前，
+//     等离子 / 波浪 / 立方体都要用，但不能污染上面的字体 namespace。
+namespace {
+
+// 64 点正弦表，值域 0..63（= 31.5 + 31.5*sin）。
+//   ⚠️ 为什么不用 sinf()：等离子一帧要算 128×48 = 6144 个像素、每像素 4 次
+//      sin —— 单核 C3 上 24k 次 libm 调用直接把唤醒词检测饿死。查表把
+//      每次 sin 变成一次数组读取，一帧成本降到几万条整数指令。
+constexpr uint8_t kSin64[64] = {
+    32,35,38,41,44,46,49,51,54,56,58,59,61,62,62,63,
+    63,63,62,62,61,59,58,56,54,51,49,46,44,41,38,35,
+    32,28,25,22,19,17,14,12, 9, 7, 5, 4, 2, 1, 1, 0,
+     0, 0, 1, 1, 2, 4, 5, 7, 9,12,14,17,19,22,25,28
+};
+
+// 4×4 Bayer 有序抖动矩阵。
+//   ⚠️ 单色屏每个像素只有亮/灭，等离子那种"连续灰度"必须用抖动来骗眼睛：
+//      把像素值和这个位置的阈值比，大于阈值才点亮 —— 亮点的疏密就成了灰阶。
+//      用有序（而非随机）矩阵是因为它形成的纹理是规则的、静止的，画面才不会满屏噪点。
+constexpr uint8_t kBayer4[4][4] = {
+    { 0,  8,  2, 10},
+    {12,  4, 14,  6},
+    { 3, 11,  1,  9},
+    {15,  7, 13,  5}
+};
+
+} // namespace
+
 // ----------------------- 基础画图 -----------------------
 
 void OledDisplay::Clear() {
@@ -432,6 +461,52 @@ void OledDisplay::RenderTick() {
         if (now - last_planet_us_ >= 100000) {
             last_planet_us_ = now;
             RenderMatrixRain();
+        }
+    } else if (wallpaper_.load() == 6) {
+        // ── 壁纸 6 = 等离子：10fps ──
+        //   全场第二重的画面（6144 个像素逐个算 4 次查表 + Bayer 抖动），
+        //   所以跟星球一样给最低帧率；查表已经把成本压到整数运算级。
+        const int64_t now = esp_timer_get_time();
+        if (now - last_planet_us_ >= 100000) {
+            last_planet_us_ = now;
+            RenderPlasma();
+        }
+    } else if (wallpaper_.load() == 7) {
+        // ── 壁纸 7 = 隧道：12fps ──
+        const int64_t now = esp_timer_get_time();
+        if (now - last_planet_us_ >= 80000) {
+            last_planet_us_ = now;
+            RenderTunnel();
+        }
+    } else if (wallpaper_.load() == 8) {
+        // ── 壁纸 8 = 波浪：12fps ──
+        const int64_t now = esp_timer_get_time();
+        if (now - last_planet_us_ >= 80000) {
+            last_planet_us_ = now;
+            RenderWave();
+        }
+    } else if (wallpaper_.load() == 9) {
+        // ── 壁纸 9 = 弹球：~16fps（反弹要跟手，慢了拖尾会断成虚线）──
+        const int64_t now = esp_timer_get_time();
+        if (now - last_planet_us_ >= 60000) {
+            last_planet_us_ = now;
+            RenderBounce();
+        }
+    } else if (wallpaper_.load() == 10) {
+        // ── 壁纸 10 = 生命游戏：绘制 12fps，演化在 RenderLife 内部再降到 ~6 代/秒 ──
+        //   演化比绘制慢是故意的：一代要扫 64×24×8 个邻居，太快会白烧 CPU，
+        //   而图案本身每秒变 6 次已经足够"活"。
+        const int64_t now = esp_timer_get_time();
+        if (now - last_planet_us_ >= 80000) {
+            last_planet_us_ = now;
+            RenderLife();
+        }
+    } else if (wallpaper_.load() == 11) {
+        // ── 壁纸 11 = 立方体：~16fps（旋转要顺滑）──
+        const int64_t now = esp_timer_get_time();
+        if (now - last_planet_us_ >= 60000) {
+            last_planet_us_ = now;
+            RenderCube();
         }
     } else {
         // ── 待机主题 = 静态时钟：**每秒**重绘一次 ──
@@ -809,11 +884,26 @@ void OledDisplay::RenderPlanet() {
     if (planet_angle_ > PI2) planet_angle_ -= PI2;
 }
 
-// ── 待机壁纸切换（三击 BOOT / 网页都走这里）──
-//   0=静态时钟 1=动态星球 2=星空
+// ── 待机壁纸切换（长按 BOOT / 网页都走这里）──
+//   名称表：索引 = 壁纸编号。⚠️ 新增效果必须在这里补名字，否则
+//   WallpaperName() 会返回 "?"（不会崩，但日志/网页上显示不出来）。
+static const char* const kWallpaperNames[] = {
+    "时钟", "星球", "星空", "星际穿越", "指针时钟", "数字雨",
+    "等离子", "隧道", "波浪", "弹球", "生命游戏", "立方体"
+};
+
+const char* OledDisplay::WallpaperName(int wp) {
+    const int n = (int)(sizeof(kWallpaperNames) / sizeof(kWallpaperNames[0]));
+    // 双保险：编译期常量 kWallpaperCount 与名称表长度不一致时按短的走，
+    // 宁可少一个也不能越界（历史上这里越界解引用野指针直接崩过机）。
+    static_assert(kWallpaperCount <= 64, "wallpaper count out of range");
+    if (wp < 0 || wp >= n || wp >= kWallpaperCount) return "?";
+    return kWallpaperNames[wp];
+}
+
 void OledDisplay::SetWallpaper(int wp) {
     if (wp < 0) wp = 0;
-    if (wp > 5) wp = 5;      // 0..5 共 6 种壁纸
+    if (wp >= kWallpaperCount) wp = kWallpaperCount - 1;
     wallpaper_ = wp;
     last_clock_sec_ = -1;    // 切回静态时钟时立刻重画，不用等下一秒
     last_planet_us_ = 0;    // 动态壁纸：下一帧立刻画，不用等间隔
@@ -822,7 +912,7 @@ void OledDisplay::SetWallpaper(int wp) {
 
 int OledDisplay::NextWallpaper() {
     int next = wallpaper_.load() + 1;
-    if (next > 5) next = 0;
+    if (next >= kWallpaperCount) next = 0;
     SetWallpaper(next);
     return next;
 }
@@ -1028,6 +1118,289 @@ void OledDisplay::RenderMatrixRain() {
 
     planet_angle_ += 0.05f;
     if (planet_angle_ > 6.2831853f) planet_angle_ -= 6.2831853f;
+}
+
+// ── 壁纸 6：等离子（Plasma）──
+//   参考 GitHub 上的经典 SSD1306 等离子 demo（FWeinb/ESP_Plasma，AdySan 原作）：
+//   四个不同频率、不同方向的正弦叠加出流动云雾，再用 **Bayer 有序抖动**把
+//   连续灰度压成 1bit —— 这是单色屏上唯一能表现"渐变"的手段。
+//   ⚠️ 相对参考实现的关键改动：原版每像素调 sin()（在 ESP8266 上都卡），
+//   这里全部换成 kSin64 查表 + 纯整数运算，才能在单核 C3 上和唤醒词检测共存。
+void OledDisplay::RenderPlasma() {
+    Clear();
+
+    const int cx0 = kWidth / 2;                   // 64
+    const int cy0 = (kStatusBarH + kHeight) / 2;  // 40
+    const int base = (int)(planet_angle_ * 26.0f);
+    // 四个相位用不同速度推进 → 四层花纹互相"打架"，看不出周期
+    const int p1 = base & 63;
+    const int p2 = (base * 3) & 63;
+    const int p3 = (base / 2) & 63;
+    const int p4 = (63 - ((base * 2) & 63)) & 63;
+
+    for (int y = kStatusBarH; y < kHeight; ++y) {
+        const int dy = y - cy0;
+        const int rowv = kSin64[((y * 3) + p2) & 63];   // 只随 y 变化 → 提到行外算一次
+        for (int x = 0; x < kWidth; ++x) {
+            const int dx = x - cx0;
+            // 横向行波 + 纵向行波 + 斜向行波 + 环形波纹（平方距离 &63 天然形成同心圆）
+            const int v = kSin64[((x >> 1) + p1) & 63]
+                        + rowv
+                        + kSin64[(((x + y) / 3) + p3) & 63]
+                        + kSin64[(((dx * dx + dy * dy) >> 4) + p4) & 63];
+            // v ∈ 0..252，阈值展开到 8..248：亮点疏密 = 灰阶
+            if (v > ((int)kBayer4[y & 3][x & 3] * 16 + 8)) SetPixel(x, y, true);
+        }
+    }
+
+    planet_angle_ += 0.05f;
+    if (planet_angle_ > 6.2831853f) planet_angle_ -= 6.2831853f;
+}
+
+// ── 壁纸 7：3D 隧道 ──
+//   一排旋转的方框由远及近飞出画面 —— 参考 dsanborn16/esp32-oled-animations
+//   的 Tunnel。⚠️ 这里没有逐像素算 atan2/透视（那在 C3 上太贵），而是直接
+//   画 8 个"旋转矩形"：深度 z 决定大小、角度随 z 递增，视觉上就是螺旋隧道。
+//   一帧只有 32 条直线，比等离子还省。
+void OledDisplay::RenderTunnel() {
+    Clear();
+
+    const int cx = kWidth / 2;
+    const int cy = (kStatusBarH + kHeight) / 2;   // 40
+    const float frac = fmodf(planet_angle_ * 0.9f, 1.0f);
+    const float spin = planet_angle_ * 0.55f;
+
+    for (int i = 0; i < 8; ++i) {
+        const float z = (float)i + 1.4f - frac;    // 由远(z 大)及近(z 小)
+        if (z < 0.79f) continue;                   // 已经飞过镜头
+        // 58 是标定出来的：46 时最大的一圈只占 70×28（画面正中一小坨，
+        // 完全不像"在隧道里飞"），改 58 后最外圈刚好撑满内容区再被裁掉。
+        const float r = 58.0f / z;                 // 透视：近大远小
+        const float a = spin + z * 0.30f;          // 越远转得越开 → 螺旋感
+
+        int px[5], py[5];
+        for (int k = 0; k < 4; ++k) {
+            const float ang = a + k * 1.5707963f;
+            // ⚠️ 横向拉宽、纵向压扁：内容区是 128×48（约 2.7:1），方框必须跟着
+            //   变形，否则看起来是口"竖井"而不是隧道。
+            px[k] = cx + (int)(r * cosf(ang) * 1.75f + 0.5f);
+            py[k] = cy + (int)(r * sinf(ang) * 0.62f + 0.5f);
+        }
+        px[4] = px[0];
+        py[4] = py[0];
+        // 越近的框画得越粗 —— 单色屏没有灰度，靠"线宽"也能造纵深
+        const bool near = (z < 3.0f);
+        for (int k = 0; k < 4; ++k) {
+            DrawLine(px[k], py[k], px[k + 1], py[k + 1], true);
+            if (near) DrawLine(px[k] + 1, py[k] + 1, px[k + 1] + 1, py[k + 1] + 1, true);
+        }
+    }
+
+    planet_angle_ += 0.05f;
+    if (planet_angle_ > 6.2831853f) planet_angle_ -= 6.2831853f;
+}
+
+// ── 壁纸 8：正弦干涉（Wave Pattern）──
+//   三条频率 / 相位 / 幅度都不同的正弦横向铺开，互相干涉出"水面波纹"。
+//   参考 dsanborn16/esp32-oled-animations 的 Wave Pattern。
+//   ⚠️ 单色屏画不出灰度，所以不铺满屏画场强，只画曲线本身 —— 更干净也更省。
+void OledDisplay::RenderWave() {
+    Clear();
+
+    const int cy   = (kStatusBarH + kHeight) / 2;   // 40
+    const int base = (int)(planet_angle_ * 22.0f);
+
+    for (int w = 0; w < 3; ++w) {
+        const int amp  = 15 - w * 4;         // 15 / 11 / 7
+        const int ph   = base * (1 + w) + w * 17;
+        const int yoff = (w - 1) * 7;        // -7 / 0 / +7：三条错开，别糊成一团
+        int prev = -1;
+        for (int x = 0; x < kWidth; ++x) {
+            const int idx = ((x * (2 + w)) / 3 + ph) & 63;
+            const int y   = cy + ((kSin64[idx] - 32) * amp) / 32 + yoff;
+            // 相邻列落差 > 1 时补竖线，否则陡峭处会断成虚线点阵
+            if (prev >= 0 && (y > prev + 1 || y < prev - 1)) {
+                const int a = (y < prev) ? y : prev;
+                const int b = (y < prev) ? prev : y;
+                for (int yy = a; yy <= b; ++yy) SetPixel(x, yy, true);
+            } else {
+                SetPixel(x, y, true);
+            }
+            prev = y;
+        }
+    }
+
+    planet_angle_ += 0.05f;
+    if (planet_angle_ > 6.2831853f) planet_angle_ -= 6.2831853f;
+}
+
+// ── 壁纸 9：弹球（Bouncing Ball）──
+//   经典屏保：球在内容区里物理反弹，拖着一条逐渐变细的尾巴。
+//   参考 dsanborn16/esp32-oled-animations 的 Bouncing Ball（它带重力 + 阻尼，
+//   这里去掉重力改成匀速反弹 —— 有重力的话球很快贴底不动，当壁纸看会"死掉"）。
+void OledDisplay::RenderBounce() {
+    Clear();
+
+    const int left = 3, right = kWidth - 4;
+    const int top  = kStatusBarH + 3, bot = kHeight - 4;
+
+    if (!ball_ready_) {
+        ball_x_ = 20.0f;  ball_y_ = 34.0f;
+        ball_vx_ = 2.1f;  ball_vy_ = 1.5f;
+        ball_head_ = 0;
+        for (int i = 0; i < kBallTrail; ++i) { ball_tx_[i] = -1; ball_ty_[i] = -1; }
+        ball_ready_ = true;
+    }
+
+    ball_x_ += ball_vx_;
+    ball_y_ += ball_vy_;
+    if (ball_x_ < left)  { ball_x_ = left;  ball_vx_ =  fabsf(ball_vx_); }
+    if (ball_x_ > right) { ball_x_ = right; ball_vx_ = -fabsf(ball_vx_); }
+    if (ball_y_ < top)   { ball_y_ = top;   ball_vy_ =  fabsf(ball_vy_); }
+    if (ball_y_ > bot)   { ball_y_ = bot;   ball_vy_ = -fabsf(ball_vy_); }
+
+    ball_head_ = (ball_head_ + 1) % kBallTrail;
+    ball_tx_[ball_head_] = (int16_t)ball_x_;
+    ball_ty_[ball_head_] = (int16_t)ball_y_;
+
+    // 从最老的一帧画到最新的一帧：越老的点越小，形成"流星尾"
+    for (int i = 0; i < kBallTrail; ++i) {
+        const int j = (ball_head_ + 1 + i) % kBallTrail;
+        const int tx = ball_tx_[j], ty = ball_ty_[j];
+        if (tx < 0) continue;
+        const int r = (i < 4) ? 1 : ((i < 9) ? 2 : 3);
+        DrawFillRect(tx - r + 1, ty - r + 1, r * 2 - 1, r * 2 - 1, true);
+    }
+
+    // 球本体：用三段矩形拼一个近似的实心圆（比逐像素判距离省得多）。
+    //   ⚠️ 直径给到 9px（原来是 7）：128×48 的屏上 7px 的球只剩 2% 覆盖率，
+    //   远看就是一个小点，撑不起整屏壁纸。
+    const int bx = (int)ball_x_, by = (int)ball_y_;
+    DrawFillRect(bx - 3, by - 3, 7, 7, true);
+    DrawFillRect(bx - 4, by - 2, 9, 5, true);
+    DrawFillRect(bx - 2, by - 4, 5, 9, true);
+}
+
+// ── 壁纸 10：康威生命游戏 ──
+//   内容区 128×48 划成 64×24 个细胞，每细胞 2×2 像素。
+//   ⚠️ 演化必须用双缓冲：Conway 规则要求"所有细胞同时更新"，就地改写会把左边
+//      刚算出的新一代当成邻居喂给右边，图案瞬间退化成一条斜线。
+//   ⚠️ 边界取环绕（环面拓扑），否则贴边的图案会被"墙"切死，很快全灭。
+void OledDisplay::SeedLife() {
+    for (int i = 0; i < kLifeW * kLifeH; ++i) {
+        life_cells_[i] = ((esp_random() & 7) < 3) ? 1 : 0;   // ~37% 初始密度
+    }
+    life_seeded_ = true;
+    life_stale_  = 0;
+}
+
+void OledDisplay::StepLife() {
+    const int N = kLifeW * kLifeH;
+    int pop = 0, diff = 0;
+
+    for (int gy = 0; gy < kLifeH; ++gy) {
+        const int y0 = (gy == 0) ? (kLifeH - 1) : (gy - 1);
+        const int y1 = (gy == kLifeH - 1) ? 0 : (gy + 1);
+        const int r0 = y0 * kLifeW, rm = gy * kLifeW, r1 = y1 * kLifeW;
+        for (int gx = 0; gx < kLifeW; ++gx) {
+            const int x0 = (gx == 0) ? (kLifeW - 1) : (gx - 1);
+            const int x1 = (gx == kLifeW - 1) ? 0 : (gx + 1);
+            const int n = life_cells_[r0 + x0] + life_cells_[r0 + gx] + life_cells_[r0 + x1]
+                        + life_cells_[rm + x0]                        + life_cells_[rm + x1]
+                        + life_cells_[r1 + x0] + life_cells_[r1 + gx] + life_cells_[r1 + x1];
+            const int cur = life_cells_[rm + gx];
+            const int nx  = cur ? ((n == 2 || n == 3) ? 1 : 0) : ((n == 3) ? 1 : 0);
+            life_next_[rm + gx] = (uint8_t)nx;
+        }
+    }
+
+    for (int i = 0; i < N; ++i) {
+        if (life_cells_[i] != life_next_[i]) diff++;
+        pop += life_next_[i];
+    }
+    memcpy(life_cells_, life_next_, N);
+
+    // 图案"死"了就重新播种：要么完全静止（diff==0，全是静物/空盘），
+    //   要么只剩零星几点（pop 太小，屏幕上几乎空白）。
+    //   连续 3 代判定成立才重播，避免把正常的振荡子误杀。
+    if (diff == 0 || pop < 25) {
+        if (++life_stale_ >= 3) SeedLife();
+    } else {
+        life_stale_ = 0;
+    }
+}
+
+void OledDisplay::RenderLife() {
+    Clear();
+
+    if (!life_seeded_) SeedLife();
+
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000ULL);
+    if (now - life_last_ms_ >= 160) {      // ~6 代/秒：一代要扫 64×24×8 个邻居
+        life_last_ms_ = now;
+        StepLife();
+    }
+
+    for (int gy = 0; gy < kLifeH; ++gy) {
+        const int py = kStatusBarH + gy * 2;
+        const int row = gy * kLifeW;
+        for (int gx = 0; gx < kLifeW; ++gx) {
+            if (life_cells_[row + gx]) DrawFillRect(gx * 2, py, 2, 2, true);
+        }
+    }
+}
+
+// ── 壁纸 11：3D 线框立方体 ──
+//   8 个顶点绕 X/Y 双轴旋转、透视投影后连 12 条棱。
+//   ⚠️ 只画棱不画面（单色屏没有明暗，实心面只会糊成一坨），顶点加粗 2×2
+//      让"骨架"更清楚 —— 这是这类 demo 在 128×64 上唯一能看的形态。
+void OledDisplay::RenderCube() {
+    Clear();
+
+    const int cx = kWidth / 2;
+    const int cy = (kStatusBarH + kHeight) / 2;   // 40
+
+    cube_ax_ += 0.031f;                 // 绕 X
+    cube_ay_ += 0.017f;                 // 绕 Y（两轴速度不同 → 轨迹不重复）
+    if (cube_ax_ > 6.2831853f) cube_ax_ -= 6.2831853f;
+    if (cube_ay_ > 6.2831853f) cube_ay_ -= 6.2831853f;
+
+    const float sa = sinf(cube_ax_), ca = cosf(cube_ax_);
+    const float sb = sinf(cube_ay_), cb = cosf(cube_ay_);
+
+    static const float kV[8][3] = {
+        {-1,-1,-1}, { 1,-1,-1}, { 1, 1,-1}, {-1, 1,-1},
+        {-1,-1, 1}, { 1,-1, 1}, { 1, 1, 1}, {-1, 1, 1}
+    };
+    static const int kE[12][2] = {
+        {0,1},{1,2},{2,3},{3,0},        // 后面
+        {4,5},{5,6},{6,7},{7,4},        // 前面
+        {0,4},{1,5},{2,6},{3,7}         // 四条连接棱
+    };
+
+    int px[8], py[8];
+    for (int i = 0; i < 8; ++i) {
+        const float x = kV[i][0], y = kV[i][1], z = kV[i][2];
+        const float y1 = y * ca - z * sa;         // 绕 X 轴
+        const float z1 = y * sa + z * ca;
+        const float x2 = x * cb + z1 * sb;        // 绕 Y 轴
+        const float z2 = -x * sb + z1 * cb;
+        // 视距 3.4 保证分母恒正（|z2| ≤ 1.74），不会除零也不会翻面。
+        //   ⚠️ 2.0 / 1.0 这两个系数是数值标定出来的：遍历整圈旋转取
+        //   max|x2*k|≈21.3、max|y1*k|≈21.2，乘上系数后最大外扩约 43×21，
+        //   即 85×42 —— 刚好撑满 128×48 的内容区又不出血。
+        //   原来用 1.5 / 0.62 只有 64×26，在这么宽的屏上小得像个图标。
+        const float k  = 36.0f / (3.4f + z2);
+        px[i] = cx + (int)(x2 * k * 2.00f + 0.5f);
+        py[i] = cy + (int)(y1 * k * 1.00f + 0.5f);
+    }
+
+    for (int i = 0; i < 12; ++i) {
+        DrawLine(px[kE[i][0]], py[kE[i][0]], px[kE[i][1]], py[kE[i][1]], true);
+    }
+    for (int i = 0; i < 8; ++i) {
+        DrawFillRect(px[i] - 1, py[i] - 1, 2, 2, true);
+    }
 }
 
 // ----------------------- 文字模式 -----------------------

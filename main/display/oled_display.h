@@ -67,10 +67,14 @@ private:
     //   SetBatteryPercent() 填进来，状态栏自动就显示真实电量了。
     std::atomic<int> battery_pct_{-1};
 
-    // ── 待机壁纸（三击 BOOT 循环切换，网页也能切）──
+    // ── 待机壁纸（长按 BOOT 循环切换，网页控制页也能直接选）──
     //   0 = 静态时钟（1 次/秒，最省电）
-    //   1 = 动态星球（12fps，最震撼也最耗电）
-    //   2 = 星空（12fps，简洁：闪烁星点 + 偶尔流星）
+    //   1 = 动态星球（8fps，逐像素光照，最震撼也最耗电）
+    //   2 = 星空      3 = 星际穿越    4 = 指针时钟    5 = 数字雨
+    //   6 = 等离子    7 = 隧道        8 = 波浪        9 = 弹球
+    //  10 = 生命游戏 11 = 立方体
+    //  编号以 kWallpaperCount 为界，新增效果只需：加一个 Render*()、在
+    //  RenderTick 里加分支、把名字补进 kWallpaperNames、并把计数 +1。
     std::atomic<int> wallpaper_{0};
     float planet_angle_ = 0.0f;   // 通用动画相位（自转 / 流动 / 演化）
     int64_t last_planet_us_ = 0;  // 上一帧时间戳 —— 动态壁纸靠它控帧率
@@ -89,6 +93,26 @@ private:
     static constexpr int kRainCols = 21;   // 128 / 6 ≈ 21 列
     float rain_y_[21] = {0};
     bool  rain_ready_ = false;
+
+    // 弹球壁纸（9）：位置 / 速度 + 环形拖尾缓冲
+    static constexpr int kBallTrail = 14;
+    float ball_x_ = 18.0f, ball_y_ = 32.0f;
+    float ball_vx_ = 2.1f, ball_vy_ = 1.5f;
+    int16_t ball_tx_[kBallTrail] = {0};
+    int16_t ball_ty_[kBallTrail] = {0};
+    int   ball_head_  = 0;
+    bool  ball_ready_ = false;
+
+    // 生命游戏壁纸（10）：life_cells_ 是当前代，life_next_ 是演算用的草稿。
+    //   必须双缓冲 ——  Conway 规则要求"所有细胞同时更新"，就地改写会把
+    //   左边刚算出来的新一代当成邻居喂给右边，图案立刻退化。
+    uint8_t life_next_[kLifeW * kLifeH] = {0};
+    bool     life_seeded_  = false;
+    int      life_stale_   = 0;      // 连续多少代"没变化或太稀疏"
+    uint32_t life_last_ms_ = 0;      // 上次演化时刻（演化 ~6 代/秒，绘制跟随刷新率）
+
+    // 立方体壁纸（11）：绕 X / Y 轴的两个旋转角
+    float cube_ax_ = 0.6f, cube_ay_ = 0.35f;
 
     char status_text_[32] = {0};              // 状态文字（表情下方一行）
     char song_name_[32] = {0};                // 歌名（音乐界面顶部显示）
@@ -159,6 +183,14 @@ private:
     void RenderWarp();       // 壁纸3: 星际穿越（星点从中心辐射飞出）
     void RenderAnalog();     // 壁纸4: 模拟指针时钟（表盘 + 时分秒针）
     void RenderMatrixRain(); // 壁纸5: 数字雨（字符列向下流动）
+    void RenderPlasma();     // 壁纸6: 等离子（Bayer 有序抖动出"灰度"）
+    void RenderTunnel();     // 壁纸7: 3D 隧道（旋转方框由远及近飞出）
+    void RenderWave();       // 壁纸8: 正弦干涉（三条异频正弦叠成水波）
+    void RenderBounce();     // 壁纸9: 弹球（物理反弹 + 拖尾）
+    void RenderLife();       // 壁纸10: 康威生命游戏（2x2 像素一个细胞）
+    void RenderCube();       // 壁纸11: 3D 线框立方体（双轴旋转 + 透视）
+    void SeedLife();         // 生命游戏：随机播种
+    void StepLife();         // 生命游戏：演化一代（双缓冲）
     void RenderChatText();   // 文字模式: 内容区显示助手回复（自动换行）
     void RenderFace();       // 表情: 两只眼睛
     void DrawMouth(int cx, int y, int idx, uint32_t rel_ms, bool talking);
@@ -219,7 +251,14 @@ public:
     // 电量 0..100；传 -1 = 没有电池检测（状态栏画空框）
     void SetBatteryPercent(int pct) { battery_pct_ = pct; dirty_ = true; }
 
-    // 待机壁纸：0=静态时钟 1=动态星球 2=星空
+    // 壁纸总数（新增效果时只改这一个常量；网页 / 长按循环 / 名称表都以它为准）
+    static constexpr int kWallpaperCount = 12;
+
+    // 壁纸中文名（越界返回 "?"，绝不返回野指针 —— 历史上 %s 解引用越界
+    // 数组直接把设备打崩过）
+    static const char* WallpaperName(int wp);
+
+    // 待机壁纸：0..kWallpaperCount-1
     void SetWallpaper(int wp);
     int  NextWallpaper();                              // 循环切下一个，返回新编号
     int  GetWallpaper() const { return wallpaper_; }

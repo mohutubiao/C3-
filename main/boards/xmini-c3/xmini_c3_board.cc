@@ -26,6 +26,10 @@ private:
     esp_lcd_panel_io_handle_t panel_io_ = nullptr;
     esp_lcd_panel_handle_t panel_ = nullptr;
     Display* display_ = nullptr;
+    // OLED 强类型指针：屏幕初始化失败时 display_ 会退化成 NoDisplay，
+    //   这时候不能再 static_cast 成 OledDisplay（那是另一套对象布局）。
+    //   用这个指针判空就安全了。
+    OledDisplay* oled_ = nullptr;
     Button boot_button_;
     PowerSaveTimer* power_save_timer_ = nullptr;
     PowerManager* power_manager_ = nullptr;
@@ -118,7 +122,23 @@ private:
         ESP_LOGI(TAG, "Turning display on");
         ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel_, true));
 
-        display_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+        oled_ = new OledDisplay(panel_io_, panel_, DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y);
+        display_ = oled_;
+        // 恢复上次选的待机壁纸（NVS；原来只在内存里，重启就回退到"时钟"）
+        LoadWallpaper();
+    }
+
+    // ── 待机壁纸的 NVS 持久化 ──────────────────────────────────────────
+    //   Settings 的析构函数会 nvs_commit()，所以临时对象写一次就够了。
+    void SaveWallpaper(int wp) {
+        Settings("display", true).SetInt("wallpaper", wp);
+    }
+    void LoadWallpaper() {
+        if (!oled_) return;
+        int wp = Settings("display", true).GetInt("wallpaper", 0);
+        if (wp < 0 || wp >= OledDisplay::kWallpaperCount) wp = 0;
+        oled_->SetWallpaper(wp);
+        ESP_LOGI(TAG, "待机壁纸(恢复): %s", OledDisplay::WallpaperName(wp));
     }
 
     void InitializeButtons() {
@@ -143,10 +163,9 @@ private:
         //   目前只保存在内存，重启回到默认的表情模式。
         boot_button_.OnDoubleClick([this]() {
             if (power_save_timer_) power_save_timer_->WakeUp();
-            if (display_ == nullptr) return;
-            auto* oled = static_cast<OledDisplay*>(display_);
-            bool next = !oled->IsChatTextMode();
-            oled->SetChatDisplayMode(next);
+            if (oled_ == nullptr) return;
+            bool next = !oled_->IsChatTextMode();
+            oled_->SetChatDisplayMode(next);
             ESP_LOGI(TAG, "显示模式: %s", next ? "文字" : "表情");
         });
         // 长按 BOOT：切换**待机壁纸**（静态时钟 / 动态星球 / 星空 / …）
@@ -157,18 +176,17 @@ private:
         //      按住到 1500ms 触发一次；松手**不会**再补发单击 —— 状态机直接进
         //      PRESS_LONG_PRESS_UP_CHECK，不经过 SINGLE_CLICK 那条分支，
         //      所以不会顺手把对话也开关一下。
-        //   ⚠️ kName 必须列满 6 个（壁纸总数）：NextWallpaper() 返回 0..5。
-        //      曾经只写了 3 个，切到第 4 个时 kName[3] 越界，读到数组后面的
-        //      垃圾指针，ESP_LOGI 用 %s 解引用它 → 直接崩。这里除了列满，
-        //      再加一道下标检查，以后忘了补名字也只是显示 "?" 而不是死机。
+        //   ⚠️ 名字统一走 OledDisplay::WallpaperName()（单点维护，越界返回 "?"）。
+        //      历史教训：这里曾各写一份 kName[] 数组，只列了 3 个而
+        //      NextWallpaper() 能返回到 5 —— kName[3] 越界读到数组后面的垃圾
+        //      指针，ESP_LOGI 用 %s 解引用它 → 直接崩机。现在两份数组合并成
+        //      一份（在 oled_display.cc），且 WallpaperName() 内部做下标检查。
         boot_button_.OnLongPress([this]() {
             if (power_save_timer_) power_save_timer_->WakeUp();
-            if (display_ == nullptr) return;
-            static const char* kName[] = {"时钟", "星球", "星空", "星际穿越", "指针时钟", "数字雨"};
-            const int kCount = (int)(sizeof(kName) / sizeof(kName[0]));
-            const int wp = static_cast<OledDisplay*>(display_)->NextWallpaper();
-            const char* name = (wp >= 0 && wp < kCount) ? kName[wp] : "?";
-            ESP_LOGI(TAG, "待机壁纸: %s", name);
+            if (oled_ == nullptr) return;
+            const int wp = oled_->NextWallpaper();
+            SaveWallpaper(wp);
+            ESP_LOGI(TAG, "待机壁纸: %s", OledDisplay::WallpaperName(wp));
         });
     }
 
@@ -262,15 +280,28 @@ extern "C" bool IsChatTextMode() {
     return oled ? oled->IsChatTextMode() : false;
 }
 
-// 待机壁纸（0=静态时钟 1=动态星球 2=星空）：给 web_server 的弱符号落点
+// 待机壁纸（0..OledDisplay::kWallpaperCount-1）：给 web_server 的弱符号落点
+//   ⚠️ 网页切的也要存 NVS，否则重启就回到"时钟"。
 extern "C" void SetWallpaper(int wp) {
     auto* oled = static_cast<OledDisplay*>(Board::GetInstance().GetDisplay());
-    if (oled) oled->SetWallpaper(wp);
+    if (!oled) return;
+    oled->SetWallpaper(wp);
+    Settings("display", true).SetInt("wallpaper", oled->GetWallpaper());
 }
 
 extern "C" int GetWallpaper() {
     auto* oled = static_cast<OledDisplay*>(Board::GetInstance().GetDisplay());
     return oled ? oled->GetWallpaper() : 0;
+}
+
+// 壁纸总数：网页用它做范围校验，避免以后加了新效果还要回来改 web_server.cc
+extern "C" int GetWallpaperCount() {
+    return OledDisplay::kWallpaperCount;
+}
+
+// 壁纸中文名：日志和网页共用一份（单点维护，越界返回 "?"）
+extern "C" const char* GetWallpaperName(int wp) {
+    return OledDisplay::WallpaperName(wp);
 }
 
 DECLARE_BOARD(XminiC3Board);

@@ -4,11 +4,13 @@ managed_components/
 build/
 build_c3/
 build_c3_old*/
+build_wp/
 managed_components_old/
 # 开发期临时诊断脚本（不入库；flash_c3.py / diag_log.py 是常用工具，保留）
 _check*.py
 _diag*.py
 _rebuild.ps1
+_build_wallpaper.bat
 capture_*.py
 check_inc.py
 diag_motor.py
